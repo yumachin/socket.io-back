@@ -21,8 +21,20 @@ const MAX_MEMBERS = 6;
 io.on('connection', (socket) => {
   console.log(`A user connected: ${socket.id}`);
 
+  // ユーザーIDを設定
+  socket.on('setUserId', ({ userId, userName }) => {
+    socket.userId = userId;
+    socket.userName = userName;
+    console.log(`User ID set: ${userId}, Name: ${userName}`);
+  });
+
   // ルーム作成処理
   socket.on('createRoom', async ({ password, user }) => {
+    console.log(`Creating room with password: "${password}" (length: ${password.length})`);
+    
+    socket.userId = user.id;
+    socket.userName = user.name;
+    
     const roomKey = `room:${password}`;
     const roomExists = await redisClient.exists(roomKey);
 
@@ -32,8 +44,8 @@ io.on('connection', (socket) => {
     }
 
     const roomInfo = {
-      host: socket.id,
-      members: JSON.stringify([{ id: socket.id, name: user.name }]),
+      host: user.id,
+      members: JSON.stringify([{ id: user.id, name: user.name }]),
       status: 'waiting',
     };
 
@@ -41,10 +53,56 @@ io.on('connection', (socket) => {
     socket.join(password);
     socket.emit('roomCreated', { password });
     updateRoomInfo(password);
+    console.log(`Room created successfully: "${password}"`);
   });
 
   // ルーム参加処理
   socket.on('joinRoom', async ({ password, user }) => {
+    console.log(`Join room request: "${password}" (length: ${password.length}), User:`, user);
+    
+    socket.userId = user.id;
+    socket.userName = user.name;
+    
+    const roomKey = `room:${password}`;
+    const roomExists = await redisClient.exists(roomKey);
+
+    if (!roomExists) {
+      console.log(`Room "${password}" not found`);
+      console.log('Available rooms:', await redisClient.keys('room:*'));
+      socket.emit('error', { message: 'ルームが見つかりません。' });
+      return;
+    }
+
+    const membersJson = await redisClient.hget(roomKey, 'members');
+    const members = JSON.parse(membersJson);
+
+    if (members.length >= MAX_MEMBERS) {
+      console.log(`Room ${password} is full`);
+      socket.emit('error', { message: 'このルームは満員です。' });
+      return;
+    }
+
+    // ユーザーIDで重複チェック
+    if (members.some(member => member.id === user.id)) {
+        console.log(`User ${user.id} rejoining room ${password}`);
+        socket.join(password);
+        socket.emit('roomJoined', { password });
+        updateRoomInfo(password);
+        return;
+    }
+
+    console.log(`Adding user ${user.id} to room ${password}`);
+    const newMembers = [...members, { id: user.id, name: user.name }];
+    await redisClient.hset(roomKey, 'members', JSON.stringify(newMembers));
+    
+    socket.join(password);
+    socket.emit('roomJoined', { password });
+    updateRoomInfo(password);
+    console.log(`User ${user.id} successfully joined room ${password}`);
+  });
+
+  // ルーム退出処理
+  socket.on('leaveRoom', async ({ password, userId }) => {
     const roomKey = `room:${password}`;
     const roomExists = await redisClient.exists(roomKey);
 
@@ -55,26 +113,36 @@ io.on('connection', (socket) => {
 
     const membersJson = await redisClient.hget(roomKey, 'members');
     const members = JSON.parse(membersJson);
+    const hostId = await redisClient.hget(roomKey, 'host');
 
-    if (members.length >= MAX_MEMBERS) {
-      socket.emit('error', { message: 'このルームは満員です。' });
-      return;
-    }
-
-    if (members.some(member => member.id === socket.id)) {
-        // すでに参加済みの場合は何もしないか、あるいは再接続処理
-        socket.join(password);
-        socket.emit('roomJoined', { password });
+    // ホストが退出する場合、ルーム全体を削除
+    if (hostId === userId) {
+      // ルーム削除
+      await redisClient.del(roomKey);
+      // 全メンバーにルーム削除を通知
+      io.to(password).emit('roomDeleted');
+      console.log(`Room ${password} deleted - host left`);
+    } else {
+      // ホスト以外のメンバーが退出する場合
+      const updatedMembers = members.filter(member => member.id !== userId);
+      
+      if (updatedMembers.length === 0) {
+        // 最後のメンバーが退出した場合、ルームを削除
+        await redisClient.del(roomKey);
+        io.to(password).emit('roomDeleted');
+        console.log(`Room ${password} deleted - no members left`);
+      } else {
+        // メンバーリストを更新
+        await redisClient.hset(roomKey, 'members', JSON.stringify(updatedMembers));
+        // ルーム情報を更新
         updateRoomInfo(password);
-        return;
+      }
     }
 
-    const newMembers = [...members, { id: socket.id, name: user.name }];
-    await redisClient.hset(roomKey, 'members', JSON.stringify(newMembers));
-    
-    socket.join(password);
-    socket.emit('roomJoined', { password });
-    updateRoomInfo(password);
+    // 退出したユーザーにのみ退出完了を通知
+    socket.leave(password);
+    socket.emit('roomLeft');
+    console.log(`User ${userId} left room ${password}`);
   });
 
   // ゲーム開始処理
@@ -85,19 +153,34 @@ io.on('connection', (socket) => {
       const members = JSON.parse(membersJson);
 
       // ホストかつ2人以上の場合のみ開始可能
-      if (socket.id === hostId && members.length >= 2) {
+      if (socket.userId === hostId && members.length >= 2) {
           await redisClient.hset(roomKey, 'status', 'playing');
           io.to(password).emit('gameStarted');
       }
   });
 
-  // ルーム情報取得処理（参加はしない）
-  socket.on('getRoomInfo', async ({ password }) => {
+  // ルーム情報取得処理
+  socket.on('getRoomInfo', async ({ password, userId }) => {
+    console.log(`Get room info request: "${password}" (length: ${password.length}), User: ${userId}`);
+    
     const roomKey = `room:${password}`;
     const roomExists = await redisClient.exists(roomKey);
 
     if (!roomExists) {
+      console.log(`Room "${password}" not found for getRoomInfo`);
+      console.log('Available rooms:', await redisClient.keys('room:*'));
       socket.emit('error', { message: 'ルームが見つかりません。' });
+      return;
+    }
+
+    const membersJson = await redisClient.hget(roomKey, 'members');
+    const members = JSON.parse(membersJson);
+    
+    // ユーザーIDがメンバーリストにあるかチェック
+    const memberExists = members.some(member => member.id === userId);
+    
+    if (!memberExists) {
+      socket.emit('error', { message: 'このルームのメンバーではありません。' });
       return;
     }
 
@@ -110,10 +193,24 @@ io.on('connection', (socket) => {
 
   // 切断時の処理
   socket.on('disconnect', async () => {
-    console.log(`User disconnected: ${socket.id}`);
-    // ユーザーがどのルームにいたかを探し、退出処理を行う
-    // (ここでは簡略化のため、クライアント側からの退出イベントを想定)
-    // 本番環境では、全ルームをスキャンするか、socket.idとルーム名を紐付けるデータ構造が必要です
+    console.log(`User disconnected: ${socket.id} (UserID: ${socket.userId})`);
+    
+    // 接続が切断された場合も自動的にルームから退出させる
+    if (socket.userId) {
+      // 全ルームをスキャンしてユーザーを探す（簡略化された実装）
+      const keys = await redisClient.keys('room:*');
+      for (const roomKey of keys) {
+        const membersJson = await redisClient.hget(roomKey, 'members');
+        if (membersJson) {
+          const members = JSON.parse(membersJson);
+          if (members.some(member => member.id === socket.userId)) {
+            const password = roomKey.replace('room:', '');
+            socket.emit('leaveRoom', { password, userId: socket.userId });
+            break;
+          }
+        }
+      }
+    }
   });
 });
 
@@ -129,7 +226,6 @@ const updateRoomInfo = async (password) => {
       status: roomInfo.status,
   });
 };
-
 
 const PORT = 4000;
 server.listen(PORT, () => {
