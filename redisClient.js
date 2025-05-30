@@ -8,11 +8,11 @@ const redisClient = new Redis({
 });
 
 redisClient.on('connect', () => {
-  console.log('Redis client connected');
+  console.log('Redisクライアントが接続されました');
 });
 
 redisClient.on('error', (err) => {
-  console.error('Redis connection error:', err);
+  console.error('Redisクライアントの接続エラー', err);
 });
 
 export default redisClient;

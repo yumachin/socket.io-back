@@ -41,18 +41,18 @@ const roomTimers = {};
 
 // 接続時の処理
 io.on('connection', (socket) => {
-  console.log(`A user connected: ${socket.id}`);
+  console.log(`接続したユーザーのSocketIdは...: ${socket.id}`);
 
   // ユーザーIDを設定
-  socket.on('setUserId', ({ userId, userName }) => {
+  socket.on('setUserInfo', ({ userId, userName }) => {
     socket.userId = userId;
     socket.userName = userName;
-    console.log(`User ID set: ${userId}, Name: ${userName}`);
+    console.log(`ユーザーId: ${userId}, ユーザーネーム: ${userName}`);
   });
 
   // ルーム作成処理
   socket.on('createRoom', async ({ password, user }) => {
-    console.log(`Creating room with password: "${password}"`);
+    console.log(`以下のパスワードを使って、ルームを作成しています: "${password}"`);
     
     socket.userId = user.id;
     socket.userName = user.name;
@@ -75,12 +75,12 @@ io.on('connection', (socket) => {
     socket.join(password);
     socket.emit('roomCreated', { password });
     updateRoomInfo(password);
-    console.log(`Room created successfully: "${password}"`);
+    console.log(`ルームの作成に成功しました！: "${password}"`);
   });
 
   // ルーム参加処理
   socket.on('joinRoom', async ({ password, user }) => {
-    console.log(`Join room request: "${password}", User:`, user);
+    console.log(`ルームに参加するための合言葉は: "${password}", 参加するユーザーは:`, user);
     
     socket.userId = user.id;
     socket.userName = user.name;
@@ -103,10 +103,10 @@ io.on('connection', (socket) => {
 
     // ユーザーIDで重複チェック
     if (members.some(member => member.id === user.id)) {
-        socket.join(password);
-        socket.emit('roomJoined', { password });
-        updateRoomInfo(password);
-        return;
+      socket.join(password);
+      socket.emit('roomJoined', { password });
+      updateRoomInfo(password);
+      return;
     }
 
     const newMembers = [...members, { id: user.id, name: user.name }];
@@ -119,37 +119,37 @@ io.on('connection', (socket) => {
 
   // ゲーム開始処理
   socket.on('startGame', async ({ password }) => {
-      const roomKey = `room:${password}`;
-      const hostId = await redisClient.hget(roomKey, 'host');
-      const membersJson = await redisClient.hget(roomKey, 'members');
-      const members = JSON.parse(membersJson);
+    const roomKey = `room:${password}`;
+    const hostId = await redisClient.hget(roomKey, 'host');
+    const membersJson = await redisClient.hget(roomKey, 'members');
+    const members = JSON.parse(membersJson);
 
-      // ホストかつ2人以上の場合のみ開始可能
-      if (socket.userId === hostId && members.length >= 2) {
-          await redisClient.hset(roomKey, 'status', 'playing');
-          
-          // ゲーム状態を初期化
-          const gameState = {
-            currentQuestion: 0,
-            usersReady: [],
-            answers: {},
-            scores: {},
-            startTime: null,
-            timeLeft: 30
-          };
-          
-          // 既存のタイマーをクリア
-          if (roomTimers[password]) {
-            clearInterval(roomTimers[password]);
-            delete roomTimers[password];
-          }
-          
-          await redisClient.hset(roomKey, 'gameState', JSON.stringify(gameState));
-          
-          // 全員にゲーム開始を通知
-          io.to(password).emit('gameStarted');
-          console.log(`Game started for room: ${password}`);
+    // ホストかつ2人以上の場合のみ開始可能
+    if (socket.userId === hostId && members.length >= 2) {
+      await redisClient.hset(roomKey, 'status', 'playing');
+      
+      // ゲーム状態を初期化
+      const gameState = {
+        currentQuestion: 0,
+        usersReady: [],
+        answers: {},
+        scores: {},
+        startTime: null,
+        timeLeft: 30
+      };
+        
+      // 既存のタイマーをクリア
+      if (roomTimers[password]) {
+        clearInterval(roomTimers[password]);
+        delete roomTimers[password];
       }
+      
+      await redisClient.hset(roomKey, 'gameState', JSON.stringify(gameState));
+      
+      // 全員にゲーム開始を通知
+      io.to(password).emit('gameStarted');
+      console.log(`以下の合言葉のルームでクイズを開始します: ${password}`);
+    }
   });
 
   // ユーザーがゲームページに到達したことを通知
@@ -268,14 +268,14 @@ io.on('connection', (socket) => {
     if (hostId === userId) {
       await redisClient.del(roomKey);
       io.to(password).emit('roomDeleted');
-      console.log(`Room ${password} deleted - host left`);
+      console.log(`合言葉が ${password} のルームはホストが退出したため削除されました`);
     } else {
       const updatedMembers = members.filter(member => member.id !== userId);
       
       if (updatedMembers.length === 0) {
         await redisClient.del(roomKey);
         io.to(password).emit('roomDeleted');
-        console.log(`Room ${password} deleted - no members left`);
+        console.log(`合言葉が ${password} のルームは全員退出したため削除されました`);
       } else {
         await redisClient.hset(roomKey, 'members', JSON.stringify(updatedMembers));
         updateRoomInfo(password);
@@ -284,11 +284,11 @@ io.on('connection', (socket) => {
 
     socket.leave(password);
     socket.emit('roomLeft');
-    console.log(`User ${userId} left room ${password}`);
+    console.log(`ユーザーIdが ${userId} のユーザーは合言葉が ${password} のルームを退出しました`);
   });
 
   socket.on('disconnect', async () => {
-    console.log(`User disconnected: ${socket.id}`);
+    console.log(`接続が切断されたユーザーのSocketIdは... ${socket.id}`);
   });
 });
 
@@ -364,7 +364,7 @@ const processQuestionResults = async (password, questionIndex) => {
   
   // nullチェックを追加
   if (!gameStateJson) {
-    console.error(`No game state found for room ${password}`);
+    console.error(`合言葉が ${password} のルームに対応するゲームの状態が見つかりませんでした`);
     return;
   }
   
@@ -446,13 +446,13 @@ const updateRoomInfo = async (password) => {
   const members = JSON.parse(roomInfo.members || '[]');
   
   io.to(password).emit('updateRoom', {
-      host: roomInfo.host,
-      members: members,
-      status: roomInfo.status,
+    host: roomInfo.host,
+    members: members,
+    status: roomInfo.status,
   });
 };
 
 const PORT = 4000;
 server.listen(PORT, () => {
-  console.log(`🚀 Server listening on port ${PORT}`);
+    console.log(`🚀 サーバーは ${PORT} 番ポートで準備しています`);
 });
