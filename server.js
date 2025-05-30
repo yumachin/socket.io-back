@@ -91,6 +91,22 @@ io.on('connection', (socket) => {
       }
   });
 
+  // ルーム情報取得処理（参加はしない）
+  socket.on('getRoomInfo', async ({ password }) => {
+    const roomKey = `room:${password}`;
+    const roomExists = await redisClient.exists(roomKey);
+
+    if (!roomExists) {
+      socket.emit('error', { message: 'ルームが見つかりません。' });
+      return;
+    }
+
+    // socketをルームに参加させる（通信のため）
+    socket.join(password);
+    
+    // ルーム情報を送信
+    updateRoomInfo(password);
+  });
 
   // 切断時の処理
   socket.on('disconnect', async () => {
