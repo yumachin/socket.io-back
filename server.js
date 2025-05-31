@@ -36,23 +36,24 @@ const quizQuestions = [
   }
 ];
 
-// タイマー管理用のオブジェクト
+// 各ルームごとにタイマーを管理するためのオブジェクト
 const roomTimers = {};
 
 // 接続時の処理
+// 各接続ごとにsocketというインスタンスが生成
 io.on('connection', (socket) => {
   console.log(`接続したユーザーのSocketIdは...: ${socket.id}`);
 
-  // ユーザーIDを設定
+  // ユーザーIDとユーザーネームを設定
   socket.on('setUserInfo', ({ userId, userName }) => {
     socket.userId = userId;
     socket.userName = userName;
-    console.log(`ユーザーId: ${userId}, ユーザーネーム: ${userName}`);
+    console.log(`ユーザーID: ${userId}, ユーザーネーム: ${userName}`);
   });
 
   // ルーム作成処理
   socket.on('createRoom', async ({ password, user }) => {
-    console.log(`以下のパスワードを使って、ルームを作成しています: "${password}"`);
+    console.log(`以下の合言葉を使って、ルームを作成しています: "${password}"`);
     
     socket.userId = user.id;
     socket.userName = user.name;
@@ -67,11 +68,20 @@ io.on('connection', (socket) => {
 
     const roomInfo = {
       host: user.id,
+      // ユーザー情報をJSON文字列に変換(Redisはハッシュだから)
       members: JSON.stringify([{ id: user.id, name: user.name }]),
       status: 'waiting',
     };
 
+    // Redis のハッシュ（HSET）で以下の情報を保存
+    //   キー: room:abcd1234
+    // 　値（ハッシュ）:
+    //   ├── host   => 'socket123'
+    //   ├── members => '[{"id":"socket123","name":"たろう"}]'
+    //   └── status => 'waiting'
     await redisClient.hset(roomKey, roomInfo);
+
+    //socketをpasswordという名前のルームに参加させる
     socket.join(password);
     socket.emit('roomCreated', { password });
     updateRoomInfo(password);
@@ -94,14 +104,18 @@ io.on('connection', (socket) => {
     }
 
     const membersJson = await redisClient.hget(roomKey, 'members');
+    //JSON文字列で保存されているため、それをパース
     const members = JSON.parse(membersJson);
 
+    // すでにMAX_MEMBERS（６人）の場合は、errorを返す
+    // まだ５人しかいない場合は、人を追加
     if (members.length >= MAX_MEMBERS) {
       socket.emit('error', { message: 'このルームは満員です。' });
       return;
     }
 
-    // ユーザーIDで重複チェック
+    // ユーザーが既にそのルームに入っている場合
+    // some(...): 配列の中に「条件を満たす要素が1つでもあるか」を判定するメソッド。
     if (members.some(member => member.id === user.id)) {
       socket.join(password);
       socket.emit('roomJoined', { password });
@@ -109,6 +123,7 @@ io.on('connection', (socket) => {
       return;
     }
 
+    // ユーザーが未だそのルームに入っていない場合
     const newMembers = [...members, { id: user.id, name: user.name }];
     await redisClient.hset(roomKey, 'members', JSON.stringify(newMembers));
     
@@ -439,12 +454,14 @@ const endGame = async (password) => {
   io.to(password).emit('gameEnded', gameState.scores || {});
 };
 
-// ルーム情報を更新して全員に通知するヘルパー関数
+// 特定のルームの最新情報をそのルームに属するすべてのクライアントに送信するヘルパー関数
 const updateRoomInfo = async (password) => {
   const roomKey = `room:${password}`;
+  // hgetall(roomKey): キーが”roomKey”のルームの、すべての情報を取得
   const roomInfo = await redisClient.hgetall(roomKey);
   const members = JSON.parse(roomInfo.members || '[]');
   
+  // to(): 特定のルーム（= password）に属するクライアント全員にメッセージを送信
   io.to(password).emit('updateRoom', {
     host: roomInfo.host,
     members: members,
