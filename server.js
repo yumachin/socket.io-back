@@ -42,10 +42,11 @@ const fetchQuizQuestions = async () => {
       questionid: item.questionid,
       question: item.question,
       options: [item.option1, item.option2, item.option3, item.option4],
-      correctAnswer: 0, // デフォルトで最初の選択肢を正解とする（実際のAPIには正解情報がないため）
+      correctAnswer: item.answer === "A" ? 0 : item.answer === "B" ? 1 : item.answer === "C" ? 2 : 3, // デフォルトで最初の選択肢を正解とする（実際のAPIには正解情報がないため）
       level: item.level,
       explanation: item.explanation
     }));
+    console.log("a", data)
     console.log(`${quizQuestions.length}問のクイズデータを取得しました`);
   } catch (error) {
     console.error('クイズデータの取得に失敗しました:', error);
